@@ -52,12 +52,14 @@ class BaseProvider(ABC):
         finish_reason: str = "stop",
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        selected_upstream_model: str | None = None,
     ) -> ChatResponse:
         """Build a normalised ChatResponse from raw provider output."""
         return ChatResponse(
             id=f"chatcmpl-{uuid.uuid4().hex[:24]}",
             provider=provider,
             model=model,
+            selected_upstream_model=selected_upstream_model,
             choices=[
                 {
                     "index": 0,

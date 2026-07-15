@@ -8,7 +8,6 @@ set -euo pipefail
 # Required environment variables (with safe defaults for local testing):
 #   GATEWAY_URL      – base URL of the running gateway (default: http://127.0.0.1:9000)
 #   GATEWAY_AUDIT_TOKEN – bearer token for /audit/recent (default: test-token)
-#   OPENAI_API_KEY   – required for OpenAI requests
 #   QWEN_API_KEY     – required for Qwen requests
 #   STEP_API_KEY     – required for Step requests
 # ---------------------------------------------------------------------------
@@ -17,7 +16,6 @@ set -euo pipefail
 
 GATEWAY_URL="${GATEWAY_URL:-http://127.0.0.1:9000}"
 AUDIT_TOKEN="${GATEWAY_AUDIT_TOKEN:-test-token}"
-OPENAI_KEY="${OPENAI_API_KEY:-}"
 QWEN_KEY="${QWEN_API_KEY:-}"
 STEP_KEY="${STEP_API_KEY:-}"
 
@@ -73,21 +71,16 @@ echo ""
 
 # 1. GET /health
 echo "[1/6] GET /health"
-check "health" 200 GET "$GATEWAY_URL/api/health"
+check "health" 200 GET "$GATEWAY_URL/health"
 
-# 2. authenticated GET /v1/models (requires any API key in Authorization)
+# 2. GET /v1/models
 echo "[2/6] GET /v1/models"
-if [[ -n "$OPENAI_KEY" ]]; then
-    check "list_models" 200 GET "$GATEWAY_URL/api/v1/models" \
-        --header "Authorization: Bearer $OPENAI_KEY"
-else
-    echo "  SKIP: OPENAI_API_KEY not set"
-fi
+check "list_models" 200 GET "$GATEWAY_URL/v1/models"
 
 # 3. cofounder-qwen request
 echo "[3/6] POST /v1/chat/completions (cofounder-qwen)"
 if [[ -n "$QWEN_KEY" ]]; then
-    check "qwen_chat" 200 POST "$GATEWAY_URL/api/v1/chat/completions" \
+    check "qwen_chat" 200 POST "$GATEWAY_URL/v1/chat/completions" \
         --header "Content-Type: application/json" \
         --header "Authorization: Bearer $QWEN_KEY" \
         --data '{"provider":"cofounder-qwen","model":"'"${QWEN_MODEL:-qwen-turbo}"'","messages":[{"role":"user","content":"ping"}]}'
@@ -98,7 +91,7 @@ fi
 # 4. cofounder-step request
 echo "[4/6] POST /v1/chat/completions (cofounder-step)"
 if [[ -n "$STEP_KEY" ]]; then
-    check "step_chat" 200 POST "$GATEWAY_URL/api/v1/chat/completions" \
+    check "step_chat" 200 POST "$GATEWAY_URL/v1/chat/completions" \
         --header "Content-Type: application/json" \
         --header "Authorization: Bearer $STEP_KEY" \
         --data '{"provider":"cofounder-step","model":"'"${STEP_MODEL:-step-2-16k}"'","messages":[{"role":"user","content":"ping"}]}'
@@ -108,18 +101,18 @@ fi
 
 # 5. cofounder-auto request (no provider specified → uses default)
 echo "[5/6] POST /v1/chat/completions (auto/default)"
-if [[ -n "$OPENAI_KEY" ]]; then
-    check "auto_chat" 200 POST "$GATEWAY_URL/api/v1/chat/completions" \
+if [[ -n "$QWEN_KEY" ]]; then
+    check "auto_chat" 200 POST "$GATEWAY_URL/v1/chat/completions" \
         --header "Content-Type: application/json" \
-        --header "Authorization: Bearer $OPENAI_KEY" \
+        --header "Authorization: Bearer $QWEN_KEY" \
         --data '{"messages":[{"role":"user","content":"ping"}]}'
 else
-    echo "  SKIP: OPENAI_API_KEY not set"
+    echo "  SKIP: QWEN_API_KEY not set"
 fi
 
 # 6. authenticated GET /audit/recent
 echo "[6/6] GET /audit/recent"
-check "audit_recent" 200 GET "$GATEWAY_URL/api/audit/recent" \
+check "audit_recent" 200 GET "$GATEWAY_URL/audit/recent" \
     --header "X-Audit-Token: $AUDIT_TOKEN"
 
 echo ""

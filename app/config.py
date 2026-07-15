@@ -50,8 +50,7 @@ class Settings(BaseSettings):
     step_model: str = Field(default="step-3.7-flash", validation_alias="STEP_MODEL")
 
     # ── Default model preferences ──────────────────────────────────────────
-    default_model: str = "gpt-4o-mini"
-    default_provider: str = "openai"
+    # No default model/provider — clients must specify a virtual model.
 
     # ── Audit ──────────────────────────────────────────────────────────────
     audit_dir: str = Field(default="data/audit", validation_alias="AUDIT_DIR")

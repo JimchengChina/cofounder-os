@@ -31,16 +31,6 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     registry = get_registry()
 
-    # Always register OpenAI-compatible provider
-    openai = OpenAICompatProvider(
-        name=Provider.OPENAI,
-        api_key=settings.gateway_api_key,
-        base_url="https://api.openai.com/v1",
-        model=settings.default_model,
-    )
-    registry.register(openai)
-    logger.info("Registered provider: %s", openai.name)
-
     # Register Qwen if API key is configured
     if settings.qwen_api_key:
         qwen = OpenAICompatProvider(
@@ -129,8 +119,8 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Include API routes
-app.include_router(api_router, prefix="/api")
+# Include API routes at root — no /api prefix
+app.include_router(api_router)
 
 
 @app.get("/", tags=["system"])

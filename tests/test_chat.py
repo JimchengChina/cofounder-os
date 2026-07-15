@@ -9,32 +9,6 @@ from app.providers.base import BaseProvider
 from app.providers.registry import ProviderRegistry, set_registry
 
 
-class FakeOpenAI(BaseProvider):
-    """Fake OpenAI provider."""
-
-    name = Provider.OPENAI
-
-    async def complete(self, **kwargs):
-        from app.models import ChatResponse, ChatChoice, ChatMessage, Usage
-
-        return ChatResponse(
-            id="chatcmpl-openai",
-            provider=Provider.OPENAI,
-            model=kwargs.get("model", "gpt-4o-mini"),
-            choices=[
-                {
-                    "index": 0,
-                    "message": ChatMessage(role="assistant", content="Mocked OpenAI response"),
-                    "finish_reason": "stop",
-                }
-            ],
-            usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
-        )
-
-    async def health(self):
-        return "healthy", 42.0
-
-
 class FakeQwen(BaseProvider):
     """Fake Qwen provider."""
 
@@ -46,7 +20,7 @@ class FakeQwen(BaseProvider):
         return ChatResponse(
             id="chatcmpl-qwen",
             provider=Provider.QWEN,
-            model=kwargs.get("model", "qwen-turbo"),
+            model="cofounder-qwen",
             choices=[
                 {
                     "index": 0,
@@ -72,7 +46,7 @@ class FakeStep(BaseProvider):
         return ChatResponse(
             id="chatcmpl-step",
             provider=Provider.STEP,
-            model=kwargs.get("model", "step-2-16k"),
+            model="cofounder-step",
             choices=[
                 {
                     "index": 0,
@@ -97,33 +71,13 @@ def _setup_client_with(client, providers):
 
 
 class TestChatCompletionsEndpoint:
-    def test_chat_returns_200_with_openai(self, client):
-        _setup_client_with(client, [FakeOpenAI()])
-
-        resp = client.post(
-            "/api/v1/chat/completions",
-            json={
-                "provider": "openai",
-                "model": "gpt-test",
-                "messages": [{"role": "user", "content": "Say hello"}],
-                "temperature": 0.5,
-            },
-        )
-        assert resp.status_code == 200, f"Got: {resp.text}"
-        data = resp.json()
-        assert data["provider"] == "openai"
-        assert data["model"] == "gpt-test"
-        assert "choices" in data
-        assert data["choices"][0]["message"]["content"] == "Mocked OpenAI response"
-
     def test_chat_returns_200_with_qwen(self, client):
         _setup_client_with(client, [FakeQwen()])
 
         resp = client.post(
-            "/api/v1/chat/completions",
+            "/v1/chat/completions",
             json={
                 "provider": "cofounder-qwen",
-                "model": "qwen-turbo",
                 "messages": [{"role": "user", "content": "Hello"}],
             },
         )
@@ -136,10 +90,9 @@ class TestChatCompletionsEndpoint:
         _setup_client_with(client, [FakeStep()])
 
         resp = client.post(
-            "/api/v1/chat/completions",
+            "/v1/chat/completions",
             json={
                 "provider": "cofounder-step",
-                "model": "step-2-16k",
                 "messages": [{"role": "user", "content": "Hi"}],
             },
         )
@@ -149,10 +102,10 @@ class TestChatCompletionsEndpoint:
         assert "Mocked Step" in data["choices"][0]["message"]["content"]
 
     def test_chat_returns_usage(self, client):
-        _setup_client_with(client, [FakeOpenAI()])
+        _setup_client_with(client, [FakeQwen()])
 
         resp = client.post(
-            "/api/v1/chat/completions",
+            "/v1/chat/completions",
             json={
                 "messages": [{"role": "user", "content": "Test"}],
             },
@@ -160,57 +113,118 @@ class TestChatCompletionsEndpoint:
         assert resp.status_code == 200, f"Got: {resp.text}"
         data = resp.json()
         usage = data["usage"]
-        assert usage["prompt_tokens"] == 10
-        assert usage["completion_tokens"] == 5
-        assert usage["total_tokens"] == 15
+        assert usage["prompt_tokens"] == 8
+        assert usage["completion_tokens"] == 4
+        assert usage["total_tokens"] == 12
 
     def test_chat_bad_request_empty_messages(self, client):
-        _setup_client_with(client, [FakeOpenAI()])
+        _setup_client_with(client, [FakeQwen()])
 
         resp = client.post(
-            "/api/v1/chat/completions",
+            "/v1/chat/completions",
             json={"messages": []},
         )
         assert resp.status_code == 422  # Pydantic validation error
 
     def test_chat_fallback_when_preferred_unavailable(self, client):
-        """When openai is not registered, fallback to qwen."""
+        """When cofounder-qwen is not registered, fallback to cofounder-step."""
+        _setup_client_with(client, [FakeStep()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "provider": "cofounder-qwen",  # prefer qwen — not available
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        data = resp.json()
+        assert data["provider"] == "cofounder-step"
+        assert "Mocked Step" in data["choices"][0]["message"]["content"]
+
+    def test_chat_auto_routes_to_available_provider(self, client):
+        """cofounder-auto selects Qwen when only Qwen is registered."""
         _setup_client_with(client, [FakeQwen()])
 
         resp = client.post(
-            "/api/v1/chat/completions",
+            "/v1/chat/completions",
             json={
-                "provider": "openai",  # prefer openai — not available
+                "model": "cofounder-auto",
                 "messages": [{"role": "user", "content": "Hello"}],
             },
         )
         assert resp.status_code == 200, f"Got: {resp.text}"
         data = resp.json()
         assert data["provider"] == "cofounder-qwen"
-        assert "Mocked Qwen" in data["choices"][0]["message"]["content"]
 
-    def test_chat_request_id_header(self, client):
-        _setup_client_with(client, [FakeOpenAI()])
+    def test_chat_auto_falls_back_to_step(self, client):
+        """cofounder-auto falls back to Step when Qwen fails."""
+        from app.providers.base import ProviderError
+
+        class FailingQwen(BaseProvider):
+            name = Provider.QWEN
+
+            async def complete(self, **kwargs):
+                raise ProviderError("qwen down")
+
+            async def health(self):
+                return "unavailable", None
+
+        _setup_client_with(client, [FailingQwen(), FakeStep()])
 
         resp = client.post(
-            "/api/v1/chat/completions",
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-auto",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        data = resp.json()
+        assert data["provider"] == "cofounder-step"
+
+    def test_chat_request_id_header(self, client):
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "Hi"}]},
         )
         assert resp.status_code == 200
         assert "X-Request-ID" in resp.headers
         assert resp.headers["X-Request-ID"].startswith("req-")
 
-    def test_list_models(self, client):
-        _setup_client_with(client, [FakeOpenAI(), FakeQwen(), FakeStep()])
+    def test_chat_virtual_model_name_in_response(self, client):
+        """Response model field contains the virtual model name, not the upstream."""
+        _setup_client_with(client, [FakeQwen()])
 
-        resp = client.get("/api/v1/models", headers={"Authorization": "Bearer test-openai-key"})
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "cofounder-qwen"
+
+    def test_list_models(self, client):
+        _setup_client_with(client, [FakeQwen(), FakeStep()])
+
+        resp = client.get("/v1/models")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        provider_ids = {m["provider"] for m in data}
-        assert "openai" in provider_ids
-        assert "cofounder-qwen" in provider_ids
-        assert "cofounder-step" in provider_ids
+        model_ids = {m["id"] for m in data}
+        assert "cofounder-auto" in model_ids
+        assert "cofounder-qwen" in model_ids
+        assert "cofounder-step" in model_ids
+        # No upstream model names exposed
+        assert "qwen-turbo" not in model_ids
+        assert "step-2-16k" not in model_ids
+        assert "gpt-4o-mini" not in model_ids
+        assert "openai" not in model_ids
 
     def test_audit_recent_with_token(self, client):
         from app.audit.logger import get_audit_logger
@@ -220,11 +234,11 @@ class TestChatCompletionsEndpoint:
         audit.log_request(
             request_id="req-zzz",
             provider="cofounder-qwen",
-            model="qwen-turbo",
+            model="cofounder-qwen",
             status="success",
         )
 
-        resp = client.get("/api/audit/recent", headers={"X-Audit-Token": "test-audit-token"})
+        resp = client.get("/audit/recent", headers={"X-Audit-Token": "test-audit-token"})
         assert resp.status_code == 200
         data = resp.json()
         assert "records" in data
@@ -232,5 +246,5 @@ class TestChatCompletionsEndpoint:
         assert data["records"][-1]["request_id"] == "req-zzz"
 
     def test_audit_recent_without_token(self, client):
-        resp = client.get("/api/audit/recent")
+        resp = client.get("/audit/recent")
         assert resp.status_code == 401

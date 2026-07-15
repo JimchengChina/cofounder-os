@@ -72,11 +72,12 @@ class OpenAICompatProvider(BaseProvider):
 
         return self._build_response(
             provider=self.name,
-            model=data.get("model", model or self._model),
+            model=model or self._model,  # virtual model name (caller decides)
             content=message.get("content", ""),
             finish_reason=choice.get("finish_reason", "stop"),
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),
+            selected_upstream_model=data.get("model", model or self._model),
         )
 
     async def health(self) -> tuple[str, float | None]:

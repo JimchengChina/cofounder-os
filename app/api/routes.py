@@ -16,6 +16,7 @@ from app.models import (
     ErrorResponse,
     HealthResponse,
     ModelInfo,
+    Provider,
     ProviderHealth,
 )
 from app.providers.registry import get_registry
@@ -67,19 +68,16 @@ async def health(request: Request) -> HealthResponse:
     summary="List available models",
 )
 async def list_models(request: Request) -> list[ModelInfo]:
-    """Return the list of models available through this gateway."""
-    registry = get_registry()
-    models = []
-    for provider in registry.all():
-        model_id = getattr(provider, "_model", None) or getattr(provider, "name", "unknown")
-        models.append(
-            ModelInfo(
-                id=model_id,
-                provider=provider.name,
-                owned_by=provider.name.value,
-            )
-        )
-    return models
+    """Return the list of virtual models available through this gateway.
+
+    Only the three virtual model names are exposed; upstream model identifiers
+    are never surfaced here.
+    """
+    return [
+        ModelInfo(id="cofounder-auto", provider=Provider.QWEN, owned_by="cofounder-os"),
+        ModelInfo(id="cofounder-qwen", provider=Provider.QWEN, owned_by="cofounder-os"),
+        ModelInfo(id="cofounder-step", provider=Provider.STEP, owned_by="cofounder-os"),
+    ]
 
 
 @router.post(

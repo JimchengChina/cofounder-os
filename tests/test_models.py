@@ -43,8 +43,8 @@ class TestChatResponse:
     def test_build_response(self):
         resp = ChatResponse(
             id="test-id",
-            provider=Provider.OPENAI,
-            model="gpt-4o-mini",
+            provider=Provider.QWEN,
+            model="cofounder-qwen",
             choices=[
                 {
                     "index": 0,
@@ -54,13 +54,20 @@ class TestChatResponse:
             ],
             usage=Usage(prompt_tokens=5, completion_tokens=3, total_tokens=8),
         )
-        assert resp.provider == Provider.OPENAI
+        assert resp.provider == Provider.QWEN
         assert resp.choices[0].message.content == "Hi!"
         assert resp.usage.total_tokens == 8
 
 
 class TestProvider:
     def test_values(self):
-        assert Provider.OPENAI.value == "openai"
         assert Provider.QWEN.value == "cofounder-qwen"
         assert Provider.STEP.value == "cofounder-step"
+
+    def test_no_openai_enum(self):
+        """Provider.OPENAI must not exist."""
+        assert not hasattr(Provider, "OPENAI")
+
+    def test_only_two_providers(self):
+        """Only Qwen and Step are registered providers."""
+        assert len(Provider) == 2

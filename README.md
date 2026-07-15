@@ -1,7 +1,7 @@
 # Co-founder OS Gateway v0.1
 
 Unified API gateway for Co-founder OS AI providers.  Exposes a single
-OpenAI-compatible Chat Completions endpoint (`POST /api/v1/chat/completions`)
+OpenAI-compatible Chat Completions endpoint (`POST /v1/chat/completions`)
 that routes requests to the best available upstream provider with automatic
 fallback.
 
@@ -13,18 +13,12 @@ fallback.
 ┌─────────────┐     HTTP      ┌──────────────────┐     HTTP      ┌──────────────┐
 │   Client    │ ────────────► │  FastAPI Gateway │ ────────────► │   Provider   │
 │ (SDK, CLI)  │ ◄──────────── │  app/main.py     │ ◄──────────── │ (Qwen/Step)  │
-└─────────────┘              └────────┬─────────┘              └──────────────┘
-                                      │
-                          ┌───────────┴────────────┐
-                          │  ProviderRegistry       │
-                          │  (fallback logic)       │
-                          │  AuditLogger (JSONL)    │
-                          └────────────────────────┘
+└─────────────┘              └────────────────┘              └──────────────┘
 ```
 
 **Request flow:**
 
-1. Client sends `POST /api/v1/chat/completions` with an optional `provider`
+1. Client sends `POST /v1/chat/completions` with an optional `provider`
    field (`cofounder-qwen`, `cofounder-step`, or omit for `cofounder-auto`).
 2. `app/router/selector.py` looks up the preferred provider in the
    `ProviderRegistry`.
@@ -41,7 +35,7 @@ fallback.
 
 | Virtual model | Enum value | Description |
 |---|---|---|
-| `cofounder-auto` | _(default — no provider specified)_ | Routes to the first available provider. |
+| `cofounder-auto` | _(default — no provider specified)_ | Routes to Qwen or Step based on deterministic policy. |
 | `cofounder-qwen` | `cofounder-qwen` | Qwen (DashScope compatible-mode). |
 | `cofounder-step` | `cofounder-step` | StepFun (`step_plan/v1`). |
 
@@ -51,11 +45,10 @@ fallback.
 
 1. **Explicit provider wins.**  If `provider` is set in the request body, the
    gateway attempts that provider first.
-2. **Fallback order:** preferred provider → next registered provider → next →
-   … until one succeeds.
+2. **Fallback order:** preferred provider → Step (for Qwen) or Qwen (for Step).
 3. **All providers exhausted:** returns HTTP 500 with
    `{"error": "provider_error", "detail": "…"}`.
-4. **Health endpoint** (`GET /api/health`) reports `degraded` if any
+4. **Health endpoint** (`GET /health`) reports `degraded` if any
    registered provider is `unavailable`; otherwise `healthy`.
 
 ---
@@ -70,7 +63,6 @@ cp .env.example .env
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GATEWAY_API_KEY` | no | _(none)_ | API key for the OpenAI-compatible upstream. |
 | `QWEN_BASE_URL` | no | `http://127.0.0.1:8000/v1` | Qwen compatible-mode base URL. |
 | `QWEN_API_KEY` | no | _(none)_ | Qwen API key. |
 | `QWEN_MODEL` | no | `replace-with-vllm-model-id` | Qwen model identifier. |
@@ -118,7 +110,6 @@ The gateway listens on `http://127.0.0.1:9000` by default.
 ## Smoke-Test Procedure
 
 ```bash
-export OPENAI_API_KEY=sk-...
 export QWEN_API_KEY=sk-...
 export STEP_API_KEY=sk-...
 export GATEWAY_AUDIT_TOKEN=test-token
@@ -127,12 +118,12 @@ bash scripts/smoke_test.sh
 
 The smoke test exercises:
 
-1. `GET /api/health`
-2. `GET /api/v1/models` (authenticated)
-3. `POST /api/v1/chat/completions` — `cofounder-qwen`
-4. `POST /api/v1/chat/completions` — `cofounder-step`
-5. `POST /api/v1/chat/completions` — `cofounder-auto` (default provider)
-6. `GET /api/audit/recent` (authenticated)
+1. `GET /health`
+2. `GET /v1/models`
+3. `POST /v1/chat/completions` — `cofounder-qwen`
+4. `POST /v1/chat/completions` — `cofounder-step`
+5. `POST /v1/chat/completions` — `cofounder-auto` (default provider)
+6. `GET /audit/recent` (authenticated)
 
 All values come from environment variables; no credentials are hard-coded in
 the script.
@@ -152,7 +143,7 @@ the script.
 
 ```bash
 curl -H "X-Audit-Token: $GATEWAY_AUDIT_TOKEN" \
-     http://127.0.0.1:9000/api/audit/recent
+     http://127.0.0.1:9000/audit/recent
 ```
 
 Returns the last 200 records from today's file.
@@ -163,10 +154,10 @@ Returns the last 200 records from today's file.
 
 | Endpoint | Auth |
 |---|---|
-| `GET /api/health` | None |
-| `GET /api/v1/models` | None |
-| `POST /api/v1/chat/completions` | None (API keys passed upstream) |
-| `GET /api/audit/recent` | `X-Audit-Token` header must match `GATEWAY_AUDIT_TOKEN` |
+| `GET /health` | None |
+| `GET /v1/models` | None |
+| `POST /v1/chat/completions` | None (API keys passed upstream) |
+| `GET /audit/recent` | `X-Audit-Token` header must match `GATEWAY_AUDIT_TOKEN` |
 
 ---
 

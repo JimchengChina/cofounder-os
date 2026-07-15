@@ -9,9 +9,8 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class Provider(str, Enum):
-    """Supported AI providers."""
+    """Supported AI providers — virtual model identifiers exposed to clients."""
 
-    OPENAI = "openai"
     QWEN = "cofounder-qwen"
     STEP = "cofounder-step"
 
@@ -71,12 +70,13 @@ class ChatResponse(BaseModel):
     id: str
     provider: Provider
     model: str
+    selected_upstream_model: Optional[str] = None
     choices: list[ChatChoice]
     usage: Usage
 
 
 class ModelInfo(BaseModel):
-    """Model listing entry."""
+    """Model listing entry — virtual model exposed to clients."""
 
     id: str
     provider: Provider
@@ -86,7 +86,7 @@ class ModelInfo(BaseModel):
 class ProviderHealth(BaseModel):
     """Health status for a single provider."""
 
-    provider: Provider
+    provider: str
     status: str  # "healthy" | "degraded" | "unavailable"
     latency_ms: Optional[float] = None
     detail: Optional[str] = None
