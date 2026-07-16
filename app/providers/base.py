@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.models import ChatMessage, ChatResponse, Provider
 
@@ -48,13 +48,30 @@ class BaseProvider(ABC):
         *,
         provider: Provider,
         model: str,
-        content: str,
+        content: str | None = None,
         finish_reason: str = "stop",
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         selected_upstream_model: str | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        function_call: dict[str, Any] | None = None,
+        refusal: str | None = None,
     ) -> ChatResponse:
-        """Build a normalised ChatResponse from raw provider output."""
+        """Build a normalised ChatResponse from raw provider output.
+
+        Content may be None when the upstream returns a tool-call-only or
+        reasoning model response.
+        """
+        message: dict[str, Any] = {"role": "assistant"}
+        if content is not None:
+            message["content"] = content
+        if tool_calls is not None:
+            message["tool_calls"] = tool_calls
+        if function_call is not None:
+            message["function_call"] = function_call
+        if refusal is not None:
+            message["refusal"] = refusal
+
         return ChatResponse(
             id=f"chatcmpl-{uuid.uuid4().hex[:24]}",
             provider=provider,
@@ -63,7 +80,7 @@ class BaseProvider(ABC):
             choices=[
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": content},
+                    "message": message,
                     "finish_reason": finish_reason,
                 }
             ],

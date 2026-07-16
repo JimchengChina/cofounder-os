@@ -8,6 +8,7 @@ import uuid
 from app.models import ChatRequest, ChatResponse, Provider
 from app.providers.registry import ProviderRegistry, get_registry
 from app.audit.logger import get_audit_logger
+from app.config import get_settings
 
 # Virtual model → (provider enum, upstream model name) mapping
 _VIRTUAL_MODELS: dict[str, tuple[Provider, str]] = {
@@ -59,6 +60,10 @@ async def route_chat(request: ChatRequest, user_agent: str | None = None) -> Cha
         # and record the actual upstream model used
         response.model = virtual_name
         response.selected_upstream_model = response.selected_upstream_model or response.model
+
+        # Attach cofounder_os metadata
+        settings = get_settings()
+        response.cofounder_os = {"version": settings.app_version}
 
         audit.log_request(
             request_id=request_id,

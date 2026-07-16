@@ -19,6 +19,7 @@ from app.models import (
     Provider,
     ProviderHealth,
 )
+from app.providers.base import ProviderError
 from app.providers.registry import get_registry
 from app.router.selector import route_chat
 
@@ -83,7 +84,11 @@ async def list_models(request: Request) -> list[ModelInfo]:
 @router.post(
     "/v1/chat/completions",
     response_model=ChatResponse,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
     tags=["chat"],
     summary="Create a chat completion",
 )
@@ -98,6 +103,15 @@ async def chat_completions(
         return JSONResponse(
             status_code=400,
             content=ErrorResponse(error="bad_request", detail=str(exc)).model_dump(),
+        )
+    except ProviderError as exc:
+        return JSONResponse(
+            status_code=502,
+            content=ErrorResponse(
+                error="upstream_error",
+                detail=str(exc),
+                request_id=getattr(request.state, "request_id", None),
+            ).model_dump(),
         )
     except Exception as exc:
         return JSONResponse(

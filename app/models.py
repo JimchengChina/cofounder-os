@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class Provider(str, Enum):
@@ -24,17 +24,14 @@ class Role(str, Enum):
 
 
 class ChatMessage(BaseModel):
-    """A single message in a conversation."""
+    """A single message in a conversation.
+
+    Content may be None for assistant messages (e.g. tool-call-only responses,
+    reasoning models, or responses terminated before final text).
+    """
 
     role: Role
-    content: str
-
-    @field_validator("content")
-    @classmethod
-    def content_not_empty(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("content must not be empty or whitespace")
-        return value
+    content: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -73,6 +70,7 @@ class ChatResponse(BaseModel):
     selected_upstream_model: Optional[str] = None
     choices: list[ChatChoice]
     usage: Usage
+    cofounder_os: dict[str, Any] | None = None
 
 
 class ModelInfo(BaseModel):

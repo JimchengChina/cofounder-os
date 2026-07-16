@@ -14,13 +14,21 @@ class TestChatMessage:
         assert msg.role.value == "user"
         assert msg.content == "Hello"
 
-    def test_empty_content_fails(self):
-        with pytest.raises(ValidationError):
-            ChatMessage(role="user", content="")
+    def test_none_content_allowed(self):
+        """Assistant messages may have content=None (tool calls, reasoning models)."""
+        msg = ChatMessage(role="assistant", content=None)
+        assert msg.role.value == "assistant"
+        assert msg.content is None
 
-    def test_whitespace_content_fails(self):
-        with pytest.raises(ValidationError):
-            ChatMessage(role="user", content="   ")
+    def test_empty_string_content_allowed(self):
+        """Empty string content is allowed for upstream responses."""
+        msg = ChatMessage(role="assistant", content="")
+        assert msg.content == ""
+
+    def test_whitespace_content_allowed(self):
+        """Whitespace-only content is allowed for upstream responses."""
+        msg = ChatMessage(role="assistant", content="   ")
+        assert msg.content == "   "
 
 
 class TestChatRequest:
