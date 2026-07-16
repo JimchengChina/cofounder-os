@@ -2,11 +2,40 @@
 
 from __future__ import annotations
 
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
 import pytest
 
+from app.config import get_settings
 from app.models import ChatMessage, CofounderOSMetadata, Provider
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.registry import ProviderRegistry, set_registry
+
+
+def _find_audit_record(request_id: str) -> dict | None:
+    """Read the audit file and return the record matching request_id, or None."""
+    settings = get_settings()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log_file = Path(settings.audit_dir) / f"{today}.jsonl"
+    if not log_file.exists():
+        return None
+    with open(log_file, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if record.get("request_id") == request_id:
+                return record
+    return None
+
+
+def _hex_pattern(value: str) -> bool:
+    """Check if a string is a 64-character lowercase hex digest."""
+    return bool(re.fullmatch(r"[0-9a-f]{64}", value))
 
 
 class FakeQwen(BaseProvider):
@@ -580,3 +609,319 @@ class TestChatCompletionsEndpoint:
     def test_audit_recent_without_token(self, client):
         resp = client.get("/audit/recent")
         assert resp.status_code == 401
+
+    # ── Audit canonical fields integration tests ────────────────────────────
+
+    def test_audit_forced_qwen_fields(self, client):
+        """Forced Qwen request logs correct canonical audit fields."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None, "No audit record found for request"
+        assert record["event"] == "chat_request"
+        assert record["requested_virtual_model"] == "cofounder-qwen"
+        assert record["selected_provider"] == "qwen"
+        assert record["routing_reason"] == "forced_local"
+
+    def test_audit_forced_step_fields(self, client):
+        """Forced Step request logs correct canonical audit fields."""
+        _setup_client_with(client, [FakeStep()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-step",
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        assert record["requested_virtual_model"] == "cofounder-step"
+        assert record["selected_provider"] == "step"
+        assert record["routing_reason"] == "forced_deep"
+
+    def test_audit_auto_routing_fields(self, client):
+        """Auto request with preferred provider available logs local_default."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-auto",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        assert record["requested_virtual_model"] == "cofounder-auto"
+        assert record["selected_provider"] == "qwen"
+        assert record["routing_reason"] == "local_default"
+
+    def test_audit_selected_upstream_model_populated(self, client):
+        """selected_upstream_model is populated in the audit record."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        assert isinstance(record["selected_upstream_model"], str)
+        assert len(record["selected_upstream_model"]) > 0
+        # Must match the response metadata
+        assert record["selected_upstream_model"] == resp.json()["cofounder_os"]["selected_upstream_model"]
+
+    def test_audit_endpoint_field(self, client):
+        """endpoint must be exactly /v1/chat/completions."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        assert record["endpoint"] == "/v1/chat/completions"
+
+    def test_audit_message_and_tool_count(self, client):
+        """message_count and tool_count reflect the request."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [
+                    {"role": "system", "content": "You are helpful."},
+                    {"role": "user", "content": "Hi"},
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        assert record["message_count"] == 2
+        assert record["tool_count"] == 0
+
+    def test_audit_prompt_sha256_format(self, client):
+        """prompt_sha256 is exactly 64 lowercase hex characters."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        sha = record["prompt_sha256"]
+        assert isinstance(sha, str)
+        assert len(sha) == 64
+        assert _hex_pattern(sha), f"Not a valid 64-char hex digest: {sha}"
+
+    def test_audit_prompt_sha256_deterministic(self, client):
+        """Identical messages produce the same SHA-256 across requests."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp1 = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Deterministic test"}],
+            },
+        )
+        resp2 = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Deterministic test"}],
+            },
+        )
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+
+        rec1 = _find_audit_record(resp1.headers["X-Request-ID"])
+        rec2 = _find_audit_record(resp2.headers["X-Request-ID"])
+        assert rec1 is not None and rec2 is not None
+        assert rec1["prompt_sha256"] == rec2["prompt_sha256"]
+
+    def test_audit_prompt_sha256_changes_with_content(self, client):
+        """Different message content produces a different SHA-256."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp1 = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Content A"}],
+            },
+        )
+        resp2 = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Content B"}],
+            },
+        )
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+
+        rec1 = _find_audit_record(resp1.headers["X-Request-ID"])
+        rec2 = _find_audit_record(resp2.headers["X-Request-ID"])
+        assert rec1 is not None and rec2 is not None
+        assert rec1["prompt_sha256"] != rec2["prompt_sha256"]
+
+    def test_audit_no_raw_prompt_content(self, client):
+        """Audit records must not contain raw message content."""
+        secret_msg = "NEVER_LOG_THIS_SECRET_PROMPT_99999"
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": secret_msg}],
+            },
+        )
+        assert resp.status_code == 200
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        # The raw message must NOT appear in the record
+        assert secret_msg not in str(record)
+        assert "messages" not in record
+        # Only the hash should reference the content
+        assert "prompt_sha256" in record
+
+    def test_audit_legacy_fields_still_present(self, client):
+        """All legacy audit fields must still be present."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        # Legacy fields
+        assert "ts" in record
+        assert "ts_iso" in record
+        assert "event" in record
+        assert record["event"] == "chat_request"
+        assert "request_id" in record
+        assert "provider" in record
+        assert "model" in record
+        assert "prompt_tokens" in record
+        assert "completion_tokens" in record
+        assert "total_tokens" in record
+        assert "latency_ms" in record
+        assert "status" in record
+        assert record["status"] == "success"
+        assert "error" in record
+        assert "user_agent" in record
+
+    def test_audit_failure_record_has_canonical_fields(self, client):
+        """Error audit records include canonical fields with null routing."""
+        _setup_client_with(client, [FailingQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        # FailingQwen raises ProviderError, and no fallback → 502
+        assert resp.status_code == 502
+        request_id = resp.headers["X-Request-ID"]
+
+        record = _find_audit_record(request_id)
+        assert record is not None
+        assert record["status"] == "error"
+        assert record["requested_virtual_model"] == "cofounder-qwen"
+        assert record["endpoint"] == "/v1/chat/completions"
+        assert record["message_count"] == 1
+        assert record["tool_count"] == 0
+        assert record["prompt_sha256"] is not None
+        assert _hex_pattern(record["prompt_sha256"])
+        # Routing was not completed
+        assert record["selected_provider"] is None
+        assert record["selected_upstream_model"] is None
+        assert record["routing_reason"] is None
+
+    def test_audit_recent_returns_new_canonical_fields(self, client):
+        """The /audit/recent endpoint returns canonical fields for new records."""
+        from app.audit.logger import get_audit_logger
+
+        audit = get_audit_logger()
+        test_req_id = "req-canonical-recent"
+        audit.log_request(
+            request_id=test_req_id,
+            provider="cofounder-qwen",
+            model="cofounder-qwen",
+            status="success",
+            endpoint="/v1/chat/completions",
+            requested_virtual_model="cofounder-qwen",
+            selected_provider="qwen",
+            selected_upstream_model="qwen-turbo",
+            routing_reason="forced_local",
+            message_count=1,
+            tool_count=0,
+            prompt_sha256="a" * 64,
+        )
+
+        resp = client.get("/audit/recent", headers={"X-Audit-Token": "test-audit-token"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "records" in data
+        record = next((r for r in data["records"] if r.get("request_id") == test_req_id), None)
+        assert record is not None
+        assert record["endpoint"] == "/v1/chat/completions"
+        assert record["requested_virtual_model"] == "cofounder-qwen"
+        assert record["selected_provider"] == "qwen"
+        assert record["routing_reason"] == "forced_local"
+        assert record["message_count"] == 1
+        assert record["prompt_sha256"] == "a" * 64

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import uuid
+from datetime import datetime, timezone
 
 from app.models import ChatRequest, ChatResponse, CofounderOSMetadata, Provider
 from app.providers.registry import ProviderRegistry, get_registry
@@ -109,6 +112,22 @@ async def route_chat(
     preferred = target_provider
     resolved_upstream_model = upstream_model
 
+    # ── Pre-compute audit fields from the request ────────────────────────
+    message_count = len(request.messages)
+    tool_count = len(getattr(request, "tools", None) or [])
+    try:
+        prompt_canonical = json.dumps(
+            [m.model_dump(mode="json") for m in request.messages],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        prompt_sha256 = hashlib.sha256(prompt_canonical.encode("utf-8")).hexdigest()
+    except Exception:
+        prompt_sha256 = None
+
+    # Canonical endpoint identifier
+    _ENDPOINT = "/v1/chat/completions"
+
     t0 = time.perf_counter()
     try:
         response, used_provider = await registry.complete_with_fallback(
@@ -134,6 +153,8 @@ async def route_chat(
             latency_ms=latency_ms,
         )
 
+        # ── Audit: use the same routing values that appear in the response ──
+        meta = response.cofounder_os
         audit.log_request(
             request_id=request_id,
             provider=used_provider.value,
@@ -143,12 +164,22 @@ async def route_chat(
             latency_ms=latency_ms,
             status="success",
             user_agent=user_agent,
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            endpoint=_ENDPOINT,
+            requested_virtual_model=virtual_name,
+            selected_provider=meta.selected_provider if meta else None,
+            selected_upstream_model=meta.selected_upstream_model if meta else None,
+            routing_reason=meta.routing_reason if meta else None,
+            message_count=message_count,
+            tool_count=tool_count,
+            prompt_sha256=prompt_sha256,
         )
 
         return response
 
     except Exception as exc:
         latency_ms = (time.perf_counter() - t0) * 1000
+        # Routing was not completed — serialize routing fields as null
         audit.log_request(
             request_id=request_id,
             provider=preferred.value,
@@ -157,5 +188,14 @@ async def route_chat(
             status="error",
             error=str(exc),
             user_agent=user_agent,
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            endpoint=_ENDPOINT,
+            requested_virtual_model=virtual_name,
+            selected_provider=None,
+            selected_upstream_model=None,
+            routing_reason=None,
+            message_count=message_count,
+            tool_count=tool_count,
+            prompt_sha256=prompt_sha256,
         )
         raise

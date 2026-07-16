@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -10,6 +11,23 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
+
+
+def _compute_prompt_sha256(messages: list[Any]) -> str | None:
+    """Compute a deterministic SHA-256 hex digest of request messages.
+
+    Uses canonical JSON serialization with sorted keys and compact separators.
+    Only includes message structure (role, content) — no secrets or raw content.
+    """
+    try:
+        canonical = json.dumps(
+            [m.model_dump(mode="json") for m in messages],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    except Exception:
+        return None
 
 
 class AuditLogger:
@@ -48,8 +66,20 @@ class AuditLogger:
         status: str = "success",
         error: str | None = None,
         user_agent: str | None = None,
+        # ── Canonical Day 2 fields ────────────────────────────────────────
+        timestamp: str | None = None,
+        endpoint: str | None = None,
+        requested_virtual_model: str | None = None,
+        selected_provider: str | None = None,
+        selected_upstream_model: str | None = None,
+        routing_reason: str | None = None,
+        message_count: int | None = None,
+        tool_count: int | None = None,
+        prompt_sha256: str | None = None,
     ) -> None:
         """Log a chat request audit record (no prompt content, no secrets)."""
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.log(
             {
                 "event": "chat_request",
@@ -63,6 +93,16 @@ class AuditLogger:
                 "status": status,
                 "error": error,
                 "user_agent": user_agent,
+                # ── Canonical Day 2 fields ────────────────────────────────────
+                "timestamp": timestamp,
+                "endpoint": endpoint,
+                "requested_virtual_model": requested_virtual_model,
+                "selected_provider": selected_provider,
+                "selected_upstream_model": selected_upstream_model,
+                "routing_reason": routing_reason,
+                "message_count": message_count,
+                "tool_count": tool_count,
+                "prompt_sha256": prompt_sha256,
             }
         )
 
