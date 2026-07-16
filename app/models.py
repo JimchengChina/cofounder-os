@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -70,7 +70,18 @@ class ChatResponse(BaseModel):
     selected_upstream_model: Optional[str] = None
     choices: list[ChatChoice]
     usage: Usage
-    cofounder_os: dict[str, Any] | None = None
+    cofounder_os: Optional[CofounderOSMetadata] = None
+
+
+class CofounderOSMetadata(BaseModel):
+    """Gateway routing metadata attached to every successful response."""
+
+    request_id: str
+    selected_provider: str
+    selected_upstream_model: str
+    routing_reason: str
+    latency_ms: float
+    version: str
 
 
 class ModelInfo(BaseModel):

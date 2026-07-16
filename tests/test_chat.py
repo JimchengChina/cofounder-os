@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models import ChatMessage, Provider
+from app.models import ChatMessage, CofounderOSMetadata, Provider
 from app.providers.base import BaseProvider, ProviderError
 from app.providers.registry import ProviderRegistry, set_registry
 
@@ -136,15 +136,26 @@ class FakeToolCallProvider(BaseProvider):
                 }
             ],
             usage=Usage(prompt_tokens=8, completion_tokens=4, total_tokens=12),
-            cofounder_os={"version": "0.1.0"},
         )
 
     async def health(self):
         return "healthy", 60.0
 
 
+class FailingQwen(BaseProvider):
+    """Fake Qwen that always raises ProviderError (triggers fallback)."""
+
+    name = Provider.QWEN
+
+    async def complete(self, **kwargs):
+        raise ProviderError("qwen down")
+
+    async def health(self):
+        return "unavailable", None
+
+
 class MalformedProvider(BaseProvider):
-    """Provider that returns a structurally invalid response."""
+    """Provider that raises ProviderError with no valid choices."""
 
     name = Provider.QWEN
 
@@ -174,7 +185,7 @@ class TestChatCompletionsEndpoint:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "provider": "cofounder-qwen",
+                "model": "cofounder-qwen",
                 "messages": [{"role": "user", "content": "Hello"}],
             },
         )
@@ -189,7 +200,7 @@ class TestChatCompletionsEndpoint:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "provider": "cofounder-step",
+                "model": "cofounder-step",
                 "messages": [{"role": "user", "content": "Hi"}],
             },
         )
@@ -230,7 +241,7 @@ class TestChatCompletionsEndpoint:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "provider": "cofounder-qwen",  # prefer qwen — not available
+                "model": "cofounder-qwen",  # prefer qwen — not available
                 "messages": [{"role": "user", "content": "Hello"}],
             },
         )
@@ -256,7 +267,7 @@ class TestChatCompletionsEndpoint:
 
     def test_chat_auto_falls_back_to_step(self, client):
         """cofounder-auto falls back to Step when Qwen fails."""
-        _setup_client_with(client, [FakeQwen()])
+        _setup_client_with(client, [FailingQwen(), FakeStep()])
 
         resp = client.post(
             "/v1/chat/completions",
@@ -267,7 +278,7 @@ class TestChatCompletionsEndpoint:
         )
         assert resp.status_code == 200, f"Got: {resp.text}"
         data = resp.json()
-        assert data["provider"] == "cofounder-qwen"
+        assert data["provider"] == "cofounder-step"
 
     def test_chat_request_id_header(self, client):
         _setup_client_with(client, [FakeQwen()])
@@ -295,7 +306,7 @@ class TestChatCompletionsEndpoint:
         data = resp.json()
         assert data["model"] == "cofounder-qwen"
 
-    # ── New tests for upstream response validation fix ──────────────────────
+    # ── Tests for upstream response validation fix ──────────────────────────
 
     def test_chat_null_content_from_upstream(self, client):
         """Qwen returning content=null must not cause HTTP 400."""
@@ -304,7 +315,7 @@ class TestChatCompletionsEndpoint:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "provider": "cofounder-qwen",
+                "model": "cofounder-qwen",
                 "messages": [{"role": "user", "content": "What is the tool result?"}],
             },
         )
@@ -320,7 +331,7 @@ class TestChatCompletionsEndpoint:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "provider": "cofounder-step",
+                "model": "cofounder-step",
                 "messages": [{"role": "user", "content": "Hi"}],
             },
         )
@@ -336,7 +347,7 @@ class TestChatCompletionsEndpoint:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "provider": "cofounder-qwen",
+                "model": "cofounder-qwen",
                 "messages": [{"role": "user", "content": "Call a tool"}],
             },
         )
@@ -353,7 +364,7 @@ class TestChatCompletionsEndpoint:
         resp = client.post(
             "/v1/chat/completions",
             json={
-                "provider": "cofounder-qwen",
+                "model": "cofounder-qwen",
                 "messages": [{"role": "user", "content": "Hello"}],
             },
         )
@@ -361,22 +372,157 @@ class TestChatCompletionsEndpoint:
         data = resp.json()
         assert data["error"] == "upstream_error"
 
-    def test_chat_cofounder_os_metadata_present(self, client):
-        """Response must include cofounder_os metadata with the gateway version."""
+    # ── Tests for routing metadata contract ─────────────────────────────────
+
+    def test_chat_metadata_cofounder_qwen(self, client):
+        """cofounder-qwen returns complete cofounder_os metadata in HTTP JSON."""
         _setup_client_with(client, [FakeQwen()])
 
         resp = client.post(
             "/v1/chat/completions",
             json={
                 "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        data = resp.json()
+
+        # Top-level, not nested under choices/message/original
+        assert "cofounder_os" in data
+        meta = data["cofounder_os"]
+        assert meta is not None
+
+        # Required fields
+        assert isinstance(meta["request_id"], str)
+        assert len(meta["request_id"]) > 0
+        assert meta["selected_provider"] == "qwen"
+        assert isinstance(meta["selected_upstream_model"], str)
+        assert meta["routing_reason"] == "forced_local"
+        assert isinstance(meta["latency_ms"], (int, float))
+        assert meta["latency_ms"] >= 0
+        assert "version" in meta
+
+    def test_chat_metadata_cofounder_step(self, client):
+        """cofounder-step returns correct cofounder_os metadata."""
+        _setup_client_with(client, [FakeStep()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-step",
                 "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        data = resp.json()
+
+        meta = data["cofounder_os"]
+        assert meta is not None
+        assert meta["selected_provider"] == "step"
+        assert meta["routing_reason"] == "forced_deep"
+        assert isinstance(meta["selected_upstream_model"], str)
+        assert len(meta["selected_upstream_model"]) > 0
+        assert isinstance(meta["request_id"], str)
+        assert len(meta["request_id"]) > 0
+
+    def test_chat_metadata_cofounder_auto(self, client):
+        """cofounder-auto with preferred provider available returns local_default."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-auto",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        data = resp.json()
+
+        meta = data["cofounder_os"]
+        assert meta is not None
+        assert meta["selected_provider"] == "qwen"
+        assert meta["routing_reason"] == "local_default"
+        assert isinstance(meta["latency_ms"], (int, float))
+        assert meta["latency_ms"] >= 0
+
+    def test_chat_metadata_auto_fallback(self, client):
+        """cofounder-auto fallback to Step when Qwen fails returns fallback_deep."""
+        _setup_client_with(client, [FailingQwen(), FakeStep()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-auto",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        data = resp.json()
+
+        meta = data["cofounder_os"]
+        assert meta is not None
+        assert meta["selected_provider"] == "step"
+        assert meta["routing_reason"] == "fallback_deep"
+
+    def test_chat_metadata_is_top_level(self, client):
+        """cofounder_os must be a top-level key, not nested under message."""
+        _setup_client_with(client, [FakeQwen()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
             },
         )
         assert resp.status_code == 200
         data = resp.json()
+
+        # Top-level key
+        assert "cofounder_os" in data
+        # Not inside choices or message
+        message = data["choices"][0]["message"]
+        assert "cofounder_os" not in message
+        assert "original" not in data
+
+    def test_chat_metadata_nullable_content_preserved(self, client):
+        """Metadata must be present even when upstream content is null."""
+        _setup_client_with(client, [FakeQwenNullContent()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Test"}],
+            },
+        )
+        assert resp.status_code == 200, f"Got: {resp.text}"
+        data = resp.json()
+
+        # Content can be null
+        assert data["choices"][0]["message"]["content"] is None
+        # Metadata is still present
         assert "cofounder_os" in data
         assert data["cofounder_os"] is not None
-        assert "version" in data["cofounder_os"]
+        assert data["cofounder_os"]["selected_provider"] == "qwen"
+        assert data["cofounder_os"]["routing_reason"] == "forced_local"
+
+    def test_chat_metadata_malformed_upstream_502(self, client):
+        """Malformed upstream responses return 502 without metadata."""
+        _setup_client_with(client, [MalformedProvider()])
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cofounder-qwen",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 502, f"Got: {resp.text}"
+        data = resp.json()
+        assert data["error"] == "upstream_error"
 
     def test_chat_virtual_model_and_metadata_together(self, client):
         """Virtual model name and cofounder_os metadata must both be correct."""

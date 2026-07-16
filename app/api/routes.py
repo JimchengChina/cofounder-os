@@ -97,7 +97,11 @@ async def chat_completions(
 ) -> ChatResponse | JSONResponse:
     """Unified chat completion endpoint with automatic provider fallback."""
     try:
-        response = await route_chat(body, user_agent=request.headers.get("user-agent"))
+        response = await route_chat(
+            body,
+            user_agent=request.headers.get("user-agent"),
+            request_id=getattr(request.state, "request_id", None),
+        )
         return response
     except ValueError as exc:
         return JSONResponse(
