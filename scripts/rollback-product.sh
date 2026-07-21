@@ -1,11 +1,14 @@
 #!/bin/zsh
 set -euo pipefail
 
-REMOTE_USER="${COFOUNDER_REMOTE_USER:-Developer}"
-REMOTE_HOST="${COFOUNDER_REMOTE_HOST:-106.13.186.155}"
-REMOTE_PORT="${COFOUNDER_REMOTE_PORT:-6098}"
-REMOTE_REPO="${COFOUNDER_REMOTE_REPO:-/home/Developer/cofounder-os}"
-SSH_KEY="${COFOUNDER_SSH_KEY:-$HOME/.ssh/cofounder_spark_ed25519}"
+REMOTE_USER="${COFOUNDER_REMOTE_USER:?Set COFOUNDER_REMOTE_USER}"
+REMOTE_HOST="${COFOUNDER_REMOTE_HOST:?Set COFOUNDER_REMOTE_HOST}"
+REMOTE_PORT="${COFOUNDER_REMOTE_PORT:-22}"
+REMOTE_HOME="${COFOUNDER_REMOTE_HOME:-/home/$REMOTE_USER}"
+REMOTE_REPO="${COFOUNDER_REMOTE_REPO:-$REMOTE_HOME/cofounder-os}"
+SSH_KEY="${COFOUNDER_SSH_KEY:?Set COFOUNDER_SSH_KEY}"
+REMOTE_DEPLOY_ROOT="${COFOUNDER_REMOTE_DEPLOY_ROOT:-$REMOTE_HOME/.config/cofounder-os/deployments}"
+REMOTE_CTL="${COFOUNDER_REMOTE_CTL:-$REMOTE_HOME/.local/bin/cofounderctl}"
 
 SSH_ARGS=(
   -i "$SSH_KEY"
@@ -23,11 +26,11 @@ TARGET_HEAD="${1:-}"
 if [[ -z "$TARGET_HEAD" ]]; then
   TARGET_HEAD="$(
     ssh "${SSH_ARGS[@]}" \
-      'latest=$(find /home/Developer/.config/cofounder-os/deployments \
+      "latest=\$(find '$REMOTE_DEPLOY_ROOT' \\
         -mindepth 2 -maxdepth 2 -name manifest.env \
         -type f 2>/dev/null | sort | tail -1);
-       test -n "$latest";
-       sed -n "s/^PREVIOUS_HEAD=//p" "$latest" | tail -1'
+       test -n \"\$latest\";
+       sed -n \"s/^PREVIOUS_HEAD=//p\" \"\$latest\" | tail -1"
   )"
 fi
 
@@ -58,9 +61,9 @@ fi
 set +e
 ssh "${SSH_ARGS[@]}" \
   "git -C '$REMOTE_REPO' reset --hard '$TARGET_HEAD' &&
-   /home/Developer/.local/bin/cofounderctl status &&
-   /home/Developer/.local/bin/cofounderctl health &&
-   /home/Developer/.local/bin/cofounderctl smoke"
+   '$REMOTE_CTL' status &&
+   '$REMOTE_CTL' health &&
+   '$REMOTE_CTL' smoke"
 ROLLBACK_RC=$?
 set -e
 
